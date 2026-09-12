@@ -1,9 +1,9 @@
 {
-  "name": "matterbridge-xiaomi-roborock",
+  "name": "matterbridge-xiaomi-dreame",
   "version": "0.6.1",
-  "description": "Matterbridge Xiaomi Roborock Plugin",
-  "author": "https://github.com/afharo",
-  "homepage": "https://github.com/afharo/matterbridge-xiaomi-roborock/blob/main/README.md",
+  "description": "Matterbridge plugin exposing Dreame robot vacuums as Matter RVCs over the local miIO/MIoT protocol",
+  "author": "https://github.com/lirik44",
+  "homepage": "https://github.com/lirik44/matterbridge-xiaomi-dreame/blob/main/README.md",
   "license": "Apache-2.0",
   "type": "module",
   "main": "dist/module.js",
@@ -14,13 +14,15 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/afharo/matterbridge-xiaomi-roborock.git"
+    "url": "git+https://github.com/lirik44/matterbridge-xiaomi-dreame.git"
   },
   "bugs": {
-    "url": "https://github.com/afharo/matterbridge-xiaomi-roborock/issues"
+    "url": "https://github.com/lirik44/matterbridge-xiaomi-dreame/issues"
   },
   "keywords": [
     "xiaomi",
+    "dreame",
+    "miot",
     "roborock",
     "vacuum",
     "robot-vacuum",

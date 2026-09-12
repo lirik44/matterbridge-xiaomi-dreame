@@ -28,7 +28,7 @@ describe('VacuumDeviceAccessory', () => {
     deviceManagerMock.device.getDeviceInfo.mockResolvedValue({ fw_ver: '1.0.0' });
 
     const { VacuumDeviceAccessory } = await import('./vacuum_device_accessory.js');
-    deviceAccessory = new VacuumDeviceAccessory({ name: 'Test Vacuum', roomNames: ['Living room'] }, logger);
+    deviceAccessory = new VacuumDeviceAccessory({ name: 'Test Vacuum' }, logger);
   });
 
   afterEach(() => {
@@ -56,174 +56,24 @@ describe('VacuumDeviceAccessory', () => {
       await expect(endpointPromise).resolves.toBeInstanceOf(RoboticVacuumCleaner);
     });
 
-    describe('serviceAreas', () => {
-      test('should retrieve service areas via room mappings', async () => {
-        deviceManagerMock.device.getRoomMap.mockResolvedValue([
-          ['16', '1234567890'],
-          ['17', 'Kitchen'],
-        ]);
+    test('should not expose any service area', async () => {
+      const endpointPromise = deviceAccessory.initializeMatterbridgeEndpoint();
 
-        const endpointPromise = deviceAccessory.initializeMatterbridgeEndpoint();
+      deviceManagerMock.deviceConnected$.next(deviceManagerMock.device);
 
-        deviceManagerMock.deviceConnected$.next(deviceManagerMock.device);
-
-        const endpoint = await endpointPromise;
-        expect(endpoint).toBeInstanceOf(RoboticVacuumCleaner);
-        expect(endpoint.behaviors.optionsFor(MatterbridgeServiceAreaServer.with(ServiceArea.Feature.Maps))).toMatchInlineSnapshot(`
-          {
-            "currentArea": 16,
-            "estimatedEndTime": null,
-            "selectedAreas": [],
-            "supportedAreas": [
-              {
-                "areaId": 16,
-                "areaInfo": {
-                  "landmarkInfo": null,
-                  "locationInfo": {
-                    "areaType": null,
-                    "floorNumber": null,
-                    "locationName": "Living room",
-                  },
-                },
-                "mapId": null,
-              },
-              {
-                "areaId": 17,
-                "areaInfo": {
-                  "landmarkInfo": null,
-                  "locationInfo": {
-                    "areaType": null,
-                    "floorNumber": null,
-                    "locationName": "Kitchen",
-                  },
-                },
-                "mapId": null,
-              },
-            ],
-            "supportedMaps": [],
-          }
-        `);
-      });
-
-      test('should retrieve service areas via timer', async () => {
-        deviceManagerMock.device.getRoomMap.mockResolvedValue([]);
-        deviceManagerMock.device.getTimer.mockResolvedValue([
-          // This one will be discarded because it's ON
-          ['timer-id', 'on', ['0 0 * * *', ['action', { segments: '16,17' }]]],
-          // This one is taken
-          ['timer-id', 'off', ['0 0 * * *', ['action', { segments: '16,17' }]]],
-        ]);
-
-        const endpointPromise = deviceAccessory.initializeMatterbridgeEndpoint();
-
-        deviceManagerMock.deviceConnected$.next(deviceManagerMock.device);
-
-        const endpoint = await endpointPromise;
-        expect(endpoint).toBeInstanceOf(RoboticVacuumCleaner);
-        expect(endpoint.behaviors.optionsFor(MatterbridgeServiceAreaServer.with(ServiceArea.Feature.Maps))).toMatchInlineSnapshot(`
-          {
-            "currentArea": 16,
-            "estimatedEndTime": null,
-            "selectedAreas": [],
-            "supportedAreas": [
-              {
-                "areaId": 16,
-                "areaInfo": {
-                  "landmarkInfo": null,
-                  "locationInfo": {
-                    "areaType": null,
-                    "floorNumber": null,
-                    "locationName": "Living room",
-                  },
-                },
-                "mapId": null,
-              },
-              {
-                "areaId": 17,
-                "areaInfo": {
-                  "landmarkInfo": null,
-                  "locationInfo": {
-                    "areaType": null,
-                    "floorNumber": null,
-                    "locationName": "Room 17",
-                  },
-                },
-                "mapId": null,
-              },
-            ],
-            "supportedMaps": [],
-          }
-        `);
-      });
-      test("should return 0 areas and assign the default ones (they'll be cleared after registration)", async () => {
-        deviceManagerMock.device.getRoomMap.mockResolvedValue([]);
-        deviceManagerMock.device.getTimer.mockResolvedValue([]);
-
-        const endpointPromise = deviceAccessory.initializeMatterbridgeEndpoint();
-
-        deviceManagerMock.deviceConnected$.next(deviceManagerMock.device);
-
-        const endpoint = await endpointPromise;
-        expect(endpoint).toBeInstanceOf(RoboticVacuumCleaner);
-        expect(endpoint.behaviors.optionsFor(MatterbridgeServiceAreaServer.with(ServiceArea.Feature.Maps))).toMatchInlineSnapshot(`
-          {
-            "currentArea": 1,
-            "estimatedEndTime": null,
-            "selectedAreas": [],
-            "supportedAreas": [
-              {
-                "areaId": 1,
-                "areaInfo": {
-                  "landmarkInfo": null,
-                  "locationInfo": {
-                    "areaType": 52,
-                    "floorNumber": 0,
-                    "locationName": "Living",
-                  },
-                },
-                "mapId": null,
-              },
-              {
-                "areaId": 2,
-                "areaInfo": {
-                  "landmarkInfo": null,
-                  "locationInfo": {
-                    "areaType": 47,
-                    "floorNumber": 0,
-                    "locationName": "Kitchen",
-                  },
-                },
-                "mapId": null,
-              },
-              {
-                "areaId": 3,
-                "areaInfo": {
-                  "landmarkInfo": null,
-                  "locationInfo": {
-                    "areaType": 7,
-                    "floorNumber": 1,
-                    "locationName": "Bedroom",
-                  },
-                },
-                "mapId": null,
-              },
-              {
-                "areaId": 4,
-                "areaInfo": {
-                  "landmarkInfo": null,
-                  "locationInfo": {
-                    "areaType": 6,
-                    "floorNumber": 1,
-                    "locationName": "Bathroom",
-                  },
-                },
-                "mapId": null,
-              },
-            ],
-            "supportedMaps": [],
-          }
-        `);
-      });
+      const endpoint = await endpointPromise;
+      expect(endpoint).toBeInstanceOf(RoboticVacuumCleaner);
+      expect(endpoint.behaviors.optionsFor(MatterbridgeServiceAreaServer.with(ServiceArea.Feature.Maps))).toMatchInlineSnapshot(`
+        {
+          "currentArea": null,
+          "estimatedEndTime": null,
+          "selectedAreas": [],
+          "supportedAreas": [],
+          "supportedMaps": [],
+        }
+      `);
+      expect(deviceManagerMock.device.getRoomMap).not.toHaveBeenCalled();
+      expect(deviceManagerMock.device.getTimer).not.toHaveBeenCalled();
     });
 
     test('should stop the device manager when the destroying lifecycle triggers', async () => {
@@ -287,20 +137,11 @@ describe('VacuumDeviceAccessory', () => {
             expect(logger.warn).toHaveBeenCalledWith('[Name=Test Vacuum][Model=unknown] Unknown mode 3');
           });
 
-          test('on Cleaning, it starts a full cleaning if no rooms are selected', async () => {
+          test('on Cleaning, it starts a full cleaning', async () => {
             endpoint.commandHandler.executeHandler('RvcRunMode.changeToMode', { request: { newMode: 2 } } as unknown as CommandHandlerPayload<'RvcRunMode.changeToMode'>);
             expect(logger.info).toHaveBeenCalledWith('[Name=Test Vacuum][Model=unknown] Initiating full cleaning...');
             expect(deviceManagerMock.device.activateCleaning).toHaveBeenCalled();
             expect(deviceManagerMock.device.cleanRooms).not.toHaveBeenCalled();
-          });
-
-          test('on Cleaning, it starts a room cleaning if any rooms are selected', async () => {
-            jest.spyOn(endpoint, 'getAttribute').mockReturnValueOnce([16, 17]);
-
-            endpoint.commandHandler.executeHandler('RvcRunMode.changeToMode', { request: { newMode: 2 } } as unknown as CommandHandlerPayload<'RvcRunMode.changeToMode'>);
-            expect(logger.info).toHaveBeenCalledWith('[Name=Test Vacuum][Model=unknown] Initiating room cleaning...');
-            expect(deviceManagerMock.device.activateCleaning).not.toHaveBeenCalled();
-            expect(deviceManagerMock.device.cleanRooms).toHaveBeenCalledWith([16, 17]);
           });
         });
       });
@@ -320,15 +161,10 @@ describe('VacuumDeviceAccessory', () => {
       });
 
       describe('resume', () => {
-        test('resumes the current full cleaning', async () => {
+        test('resumes the current cleaning', async () => {
           endpoint.commandHandler.executeHandler('resume', { request: {} } as unknown as CommandHandlerPayload<'resume'>);
           expect(deviceManagerMock.device.activateCleaning).toHaveBeenCalled();
-        });
-
-        test('resumes the current room cleaning if areas were previously selected', async () => {
-          jest.spyOn(endpoint, 'getAttribute').mockReturnValueOnce([16, 17]);
-          endpoint.commandHandler.executeHandler('resume', { request: {} } as unknown as CommandHandlerPayload<'resume'>);
-          expect(deviceManagerMock.device.resumeCleanRooms).toHaveBeenCalledWith([16, 17]);
+          expect(deviceManagerMock.device.resumeCleanRooms).not.toHaveBeenCalled();
         });
       });
 
@@ -349,22 +185,8 @@ describe('VacuumDeviceAccessory', () => {
       });
 
       describe('selectAreas', () => {
-        test('sets the selected areas', async () => {
-          const updateAttributeSpy = jest.spyOn(endpoint, 'updateAttribute').mockResolvedValueOnce(true);
-          endpoint.commandHandler.executeHandler('selectAreas', {
-            request: { newAreas: [17] },
-            attributes: { supportedAreas: [{ areaId: 16 }, { areaId: 17 }] },
-          } as unknown as CommandHandlerPayload<'selectAreas'>);
-          expect(updateAttributeSpy).toHaveBeenCalledWith(ServiceArea.Cluster.id, 'selectedAreas', [17]);
-        });
-
-        test('sets an empty array as selected areas when all rooms are selected', async () => {
-          const updateAttributeSpy = jest.spyOn(endpoint, 'updateAttribute').mockResolvedValueOnce(true);
-          endpoint.commandHandler.executeHandler('selectAreas', {
-            request: { newAreas: [16, 17] },
-            attributes: { supportedAreas: [{ areaId: 16 }, { areaId: 17 }] },
-          } as unknown as CommandHandlerPayload<'selectAreas'>);
-          expect(updateAttributeSpy).toHaveBeenCalledWith(ServiceArea.Cluster.id, 'selectedAreas', []);
+        test('is not registered, as no areas are exposed', () => {
+          expect(endpoint.commandHandler.hasHandler('selectAreas')).toBe(false);
         });
       });
     });
@@ -386,20 +208,16 @@ describe('VacuumDeviceAccessory', () => {
       updateAttributeSpy = jest.spyOn(endpoint, 'updateAttribute').mockResolvedValue(true);
     });
 
-    describe('serviceAreas hack', () => {
-      test('when no serviceAreas have been discovered, it should enforce empty values', async () => {
-        await deviceAccessory.postRegister();
-        expect(updateAttributeSpy).toHaveBeenCalledTimes(3);
-        expect(updateAttributeSpy).toHaveBeenNthCalledWith(1, ServiceArea.Cluster.id, 'currentArea', null);
-        expect(updateAttributeSpy).toHaveBeenNthCalledWith(2, ServiceArea.Cluster.id, 'currentArea', null);
-        expect(updateAttributeSpy).toHaveBeenNthCalledWith(3, ServiceArea.Cluster.id, 'supportedAreas', []);
-      });
+    test('does not touch the service area attributes', async () => {
+      await deviceAccessory.postRegister();
+      expect(updateAttributeSpy).not.toHaveBeenCalled();
+    });
 
-      test('when serviceAreas have been discovered, it should only force an empty currentArea', async () => {
-        deviceManagerMock.device.getRoomMap.mockResolvedValue([
-          ['16', 'Living room'],
-          ['17', 'Kitchen'],
-        ]);
+    describe('clean modes on a model whose water level has no "off" value', () => {
+      // Dreame robots always report a water level (1-3), so the exact (suction, water) pair the
+      // modes are built from never matches: the level that identifies what the robot is doing wins.
+      beforeEach(async () => {
+        findSpeedModesMock.mockReturnValueOnce({ speed: speedmodes.dreame, waterspeed: watermodes.dreame });
 
         const endpointPromise = deviceAccessory.initializeMatterbridgeEndpoint();
         deviceManagerMock.deviceConnected$.next(deviceManagerMock.device);
@@ -407,8 +225,29 @@ describe('VacuumDeviceAccessory', () => {
         updateAttributeSpy = jest.spyOn(endpoint, 'updateAttribute').mockResolvedValue(true);
 
         await deviceAccessory.postRegister();
-        expect(updateAttributeSpy).toHaveBeenCalledTimes(1);
-        expect(updateAttributeSpy).toHaveBeenNthCalledWith(1, ServiceArea.Cluster.id, 'currentArea', null);
+        updateAttributeSpy.mockClear();
+      });
+
+      test('reports the suction power while vacuuming', async () => {
+        deviceManagerMock.property.mockReturnValueOnce(2); // water_box_mode
+        deviceManagerMock.property.mockReturnValueOnce('cleaning'); // state
+
+        deviceManagerMock.stateChanged$.next({ key: 'fanSpeed', value: 2 });
+        await Promise.resolve(); // Just waiting for the pending promises to run
+
+        // "Strong Vacuum"
+        expect(updateAttributeSpy).toHaveBeenCalledWith(RvcCleanMode.Cluster.id, 'currentMode', 3);
+      });
+
+      test('reports the water level while mopping', async () => {
+        deviceManagerMock.property.mockReturnValueOnce(1); // fanSpeed
+        deviceManagerMock.property.mockReturnValueOnce('mopping'); // state
+
+        deviceManagerMock.stateChanged$.next({ key: 'water_box_mode', value: 3 });
+        await Promise.resolve(); // Just waiting for the pending promises to run
+
+        // "High Mop"
+        expect(updateAttributeSpy).toHaveBeenCalledWith(RvcCleanMode.Cluster.id, 'currentMode', 7);
       });
     });
 
@@ -542,6 +381,32 @@ describe('VacuumDeviceAccessory', () => {
         });
       });
 
+      describe('errorChanged', () => {
+        test.each([
+          [0, { errorStateId: RvcOperationalState.ErrorState.NoError }],
+          [null, { errorStateId: RvcOperationalState.ErrorState.NoError }],
+          [9, { errorStateId: RvcOperationalState.ErrorState.UnableToCompleteOperation, errorStateDetails: '9' }],
+          [
+            { id: 'id9', description: 'Install the dustbin and the filter.' },
+            { errorStateId: RvcOperationalState.ErrorState.UnableToCompleteOperation, errorStateDetails: 'id9: Install the dustbin and the filter.' },
+          ],
+        ])('reports %s as the operational error', async (deviceError, expected) => {
+          deviceManagerMock.errorChanged$.next(deviceError as never);
+          await Promise.resolve(); // Just waiting for the pending promises to run
+          expect(updateAttributeSpy).toHaveBeenCalledTimes(1);
+          expect(updateAttributeSpy).toHaveBeenCalledWith(RvcOperationalState.Cluster.id, 'operationalError', expected);
+        });
+
+        test('truncates the details to the 64 characters Matter allows', async () => {
+          deviceManagerMock.errorChanged$.next('a'.repeat(100) as never);
+          await Promise.resolve(); // Just waiting for the pending promises to run
+          expect(updateAttributeSpy).toHaveBeenCalledWith(RvcOperationalState.Cluster.id, 'operationalError', {
+            errorStateId: RvcOperationalState.ErrorState.UnableToCompleteOperation,
+            errorStateDetails: 'a'.repeat(64),
+          });
+        });
+      });
+
       describe('state', () => {
         const awaitNPromises = async (n: number) => {
           for (let i = 0; i < n; i++) {
@@ -567,7 +432,7 @@ describe('VacuumDeviceAccessory', () => {
           expect(updateAttributeSpy).toHaveBeenCalledWith(RvcOperationalState.Cluster.id, 'operationalState', RvcOperationalState.OperationalState.Paused);
         });
 
-        test.each(['cleaning', 'spot-cleaning', 'room-cleaning', 'zone-cleaning', 'sweeping', 'mopping', 'sweeping-and-mopping'])('%s', async (value) => {
+        test.each(['cleaning', 'spot-cleaning', 'room-cleaning', 'zone-cleaning', 'sweeping', 'mopping', 'sweeping-and-mopping', 'building'])('%s', async (value) => {
           deviceManagerMock.stateChanged$.next({ key: 'state', value });
           const expectedCalls = 3; // 2 + the charging update.
           await awaitNPromises(expectedCalls + 1);
@@ -577,7 +442,7 @@ describe('VacuumDeviceAccessory', () => {
           expect(updateAttributeSpy).toHaveBeenCalledWith(RvcOperationalState.Cluster.id, 'operationalState', RvcOperationalState.OperationalState.Running);
         });
 
-        test.each(['returning', 'docking'])('%s', async (value) => {
+        test.each(['returning', 'docking', 'returning-washing'])('%s', async (value) => {
           deviceManagerMock.stateChanged$.next({ key: 'state', value });
           const expectedCalls = 2; // 1 + the charging update.
           await awaitNPromises(expectedCalls + 1);
@@ -595,8 +460,8 @@ describe('VacuumDeviceAccessory', () => {
           expect(updateAttributeSpy).toHaveBeenCalledWith(RvcOperationalState.Cluster.id, 'operationalState', RvcOperationalState.OperationalState.Error);
         });
 
-        test('fully-charged', async () => {
-          deviceManagerMock.stateChanged$.next({ key: 'state', value: 'fully-charged' });
+        test.each(['fully-charged', 'drying', 'washing'])('%s', async (value) => {
+          deviceManagerMock.stateChanged$.next({ key: 'state', value });
           const expectedCalls = 2; // 1 + the charging update.
           await awaitNPromises(expectedCalls + 1);
           expect(updateAttributeSpy).toHaveBeenCalledTimes(expectedCalls);
@@ -611,10 +476,12 @@ describe('VacuumDeviceAccessory', () => {
           expect(updateAttributeSpy).toHaveBeenCalledTimes(expectedCalls);
           expect(logger.warn).not.toHaveBeenCalled();
           expect(updateAttributeSpy).toHaveBeenCalledWith(RvcOperationalState.Cluster.id, 'operationalState', RvcOperationalState.OperationalState.Error);
-          expect(updateAttributeSpy).toHaveBeenCalledWith(RvcOperationalState.Cluster.id, 'operationalError', RvcOperationalState.ErrorState.FailedToFindChargingDock);
+          expect(updateAttributeSpy).toHaveBeenCalledWith(RvcOperationalState.Cluster.id, 'operationalError', {
+            errorStateId: RvcOperationalState.ErrorState.FailedToFindChargingDock,
+          });
         });
 
-        test.each(['initializing', 'idle', 'sleeping'])('%s', async (value) => {
+        test.each(['initializing', 'idle', 'sleeping', 'updating'])('%s', async (value) => {
           deviceManagerMock.stateChanged$.next({ key: 'state', value });
           const expectedCalls = 3; // 2 + the charging update.
           await awaitNPromises(expectedCalls + 1);

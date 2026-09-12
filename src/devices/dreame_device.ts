@@ -35,7 +35,6 @@ const PROPS: Record<string, MiotProperty> = {
   operating_mode: { siid: 4, piid: 1 },
   cleaning_mode: { siid: 4, piid: 4 },
   water_flow: { siid: 4, piid: 5 },
-  water_box_carriage_status: { siid: 4, piid: 6 },
 };
 
 const ACTIONS: Record<string, MiotAction> = {
@@ -45,7 +44,11 @@ const ACTIONS: Record<string, MiotAction> = {
   stop_clean: { siid: 4, aiid: 2 },
 };
 
-/** `device_status` enum mapped onto the state strings the accessory understands. */
+/**
+ * `device_status` enum mapped onto the state strings the accessory understands.
+ *
+ * @see https://python-miio.readthedocs.io/en/latest/api/miio.integrations.dreame.vacuum.dreamevacuum_miot.html#miio.integrations.dreame.vacuum.dreamevacuum_miot.DeviceStatus
+ */
 const DEVICE_STATUS: Record<number, string> = {
   1: 'cleaning', // Sweeping
   2: 'idle',
@@ -54,7 +57,13 @@ const DEVICE_STATUS: Record<number, string> = {
   5: 'returning', // GoCharging
   6: 'charging',
   7: 'mopping',
-  13: 'manual-cleaning', // ManualSweeping
+  8: 'drying',
+  9: 'washing',
+  10: 'returning-washing',
+  11: 'building', // Mapping run
+  12: 'sweeping-and-mopping',
+  13: 'fully-charged',
+  14: 'updating',
 };
 
 const CHARGING_STATE: Record<number, boolean> = {
@@ -64,15 +73,7 @@ const CHARGING_STATE: Record<number, boolean> = {
   5: false, // GoCharging
 };
 
-const CLEANING_STATES = ['cleaning', 'mopping', 'manual-cleaning'];
-
-/** Room configuration used to advertise service areas. */
-export interface DreameRoomsConfig {
-  /** The segment IDs as reported by the Xiaomi Home app. */
-  roomIds?: number[];
-  /** Optional names, applied in the same order as `roomIds`. */
-  roomNames?: string[];
-}
+const CLEANING_STATES = ['cleaning', 'mopping', 'sweeping-and-mopping', 'building'];
 
 /**
  * Whether the connected device is a Dreame vacuum and needs the MIoT adapter.
@@ -89,11 +90,10 @@ export function isDreame(model: string | undefined): boolean {
  *
  * @param {MiioDevice} raw The connected node-miio device.
  * @param {ModelLogger} log The plugin logger, used to report unsupported operations.
- * @param {DreameRoomsConfig} rooms The room configuration, if the user declared any.
  * @returns {MiioDevice} A device exposing the same surface the accessory expects.
  */
-export function wrapDreame(raw: MiioDevice, log: ModelLogger, rooms: DreameRoomsConfig = {}): MiioDevice {
-  return new DreameDevice(raw, log, rooms) as unknown as MiioDevice;
+export function wrapDreame(raw: MiioDevice, log: ModelLogger): MiioDevice {
+  return new DreameDevice(raw, log) as unknown as MiioDevice;
 }
 
 interface MiotPropertyResult {
@@ -104,15 +104,10 @@ interface MiotPropertyResult {
 
 class DreameDevice {
   private cache: Record<string, unknown> = {};
-  private readonly listeners: Record<string, Array<(payload: unknown) => void>> = {
-    stateChanged: [],
-    errorChanged: [],
-  };
 
   constructor(
     private readonly raw: MiioDevice,
     private readonly log: ModelLogger,
-    private readonly rooms: DreameRoomsConfig,
   ) {}
 
   // --- plumbing the DeviceManager relies on ---------------------------------
@@ -140,8 +135,12 @@ class DreameDevice {
     this.raw.destroy();
   }
 
-  on(event: string, cb: (payload: unknown) => void): void {
-    this.listeners[event]?.push(cb);
+  /**
+   * The MIoT properties are not pushed by the robot, so there is nothing to subscribe to:
+   * `DeviceManager` polls instead and emits the changes itself.
+   */
+  on(): void {
+    // Intentionally a no-op.
   }
 
   // --- MIoT transport -------------------------------------------------------
@@ -149,8 +148,7 @@ class DreameDevice {
   /**
    * `node-miio` types `call` for the Roborock RPCs, whose arguments are plain
    * strings. MIoT payloads are objects, so the signature is widened here.
-   */
-  /**
+   *
    * @param {string} method The miIO method to invoke.
    * @param {unknown} args The MIoT payload, either an array or an object.
    * @returns {Promise<unknown>} The raw response from the device.
@@ -199,17 +197,18 @@ class DreameDevice {
     const status = DEVICE_STATUS[this.cache.device_status as number] ?? 'idle';
     const charging = CHARGING_STATE[this.cache.charging_state as number] ?? false;
     const battery = typeof this.cache.battery_level === 'number' ? this.cache.battery_level : 0;
-    const fault = this.cache.device_fault as number | undefined;
+    const fault = this.cache.device_fault;
 
     return {
       state: charging && battery >= 100 ? 'fully-charged' : status,
       batteryLevel: battery,
       charging,
       cleaning: CLEANING_STATES.includes(status),
-      in_returning: status === 'returning',
+      in_returning: status === 'returning' || status === 'returning-washing',
       fanSpeed: this.cache.cleaning_mode,
       water_box_mode: this.cache.water_flow,
-      ...(fault ? { error: fault } : {}),
+      // Always reported (`0` means "no fault") so the accessory sees the error being cleared too.
+      error: typeof fault === 'number' ? fault : 0,
     };
   }
 
@@ -286,39 +285,15 @@ class DreameDevice {
   }
 
   async setWaterBoxMode(level: number): Promise<unknown> {
-    if (typeof level !== 'number' || level < 1) {
+    if (typeof level !== 'number') {
+      return undefined;
+    }
+    if (level < 1) {
+      // `water_flow` only accepts 1-3: the water is turned off by removing the mop pad,
+      // not over MIoT. Selecting a vacuum-only mode therefore leaves the water level as is.
+      this.log.debug(`dreame | ${this.miioModel} has no "water off" level, keeping the current one`);
       return undefined;
     }
     return this.setProperty('water_flow', level);
-  }
-
-  // --- rooms ----------------------------------------------------------------
-  // The F9 family does not expose its segment list over MIoT (the map is only
-  // available as an opaque blob), so rooms cannot be discovered automatically.
-  // They can instead be declared in the plugin configuration; run
-  // `mibridge rooms <did>` or check the Xiaomi Home app to find the IDs.
-
-  /** @returns {Promise<Array<[string, string]>>} The rooms declared in the configuration, if any. */
-  async getRoomMap(): Promise<Array<[string, string]>> {
-    const { roomIds, roomNames } = this.rooms;
-
-    if (!roomIds?.length) {
-      return [];
-    }
-
-    return roomIds.map((id, index) => [String(id), roomNames?.[index] ?? `Room ${id}`]);
-  }
-
-  async getTimer(): Promise<unknown[]> {
-    return [];
-  }
-
-  async cleanRooms(areas: number[]): Promise<unknown> {
-    this.log.warn(`dreame | Room cleaning is not implemented for ${this.miioModel} yet (requested: ${areas.join(', ')}). Starting a full clean instead.`);
-    return this.activateCleaning();
-  }
-
-  async resumeCleanRooms(areas: number[]): Promise<unknown> {
-    return this.cleanRooms(areas);
   }
 }

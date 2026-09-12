@@ -16,5 +16,6 @@ temp/
 *.tsbuildinfo
 *.tgz
 *.log
+.DS_Store
 
 # Package specific directories and files that should be ignored

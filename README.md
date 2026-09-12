@@ -52,44 +52,28 @@ adapter only kicks in when the reported model starts with `dreame.`.
 - Suction power control: Quiet, Standard, Strong, Turbo
 - Water level control: Low, Medium, High
 - Battery level and charging state
-- Operational state reporting (idle, cleaning, mopping, returning, charging, error)
+- Operational state reporting (idle, cleaning, mopping, drying, washing, returning, charging, error)
+- Device faults surfaced as the Matter `OperationalError` attribute
 - Identify (locate the robot by playing a sound)
-- Rooms shown as Matter service areas, declared through the configuration
 
 Everything above works locally. There is no cloud fallback.
 
-### Rooms
-
-The F9 family does not expose its segment list over MIoT — the map is only available as an opaque blob — so rooms cannot
-be discovered automatically. Declare them in the configuration instead, using `roomIds` and `roomNames`.
-
-To find the segment IDs, either check the Xiaomi Home app or use
-[`mibridge`](https://www.npmjs.com/package/@mibridge/cli):
-
-    XIAOMI_REGION=<your-region> mibridge rooms <device-id>
-
-    Rooms:
-      ID 1    Laundry
-      ID 2    Bathroom
-      ID 3    Study
-
-> ⚠️ Matter requires every service area to have a unique name. If two rooms share a name (two bathrooms, for example),
-> pairing fails with `Areas must have a unique AreaInfo field`. Give them distinct names in `roomNames`.
-
 ### Limitations
 
-- **Selecting a room starts a full clean.** Service areas are advertised so the rooms show up in your controller, but
-  segment cleaning needs a vendor-specific payload that is not part of the shared MIoT spec. Until that is
-  reverse-engineered, a room request logs a warning and cleans everything.
+- **No rooms.** Segment cleaning needs a vendor-specific payload that is not part of the shared MIoT spec, so the plugin
+  exposes no Matter service areas at all: a cleaning request always cleans the whole place. Rooms that cannot be cleaned
+  individually are worse than no rooms — they only add controls that silently do the wrong thing.
 - **Pause maps to `stop_clean`.** The F9 spec has no dedicated pause action, so the robot halts in place.
+- **No "water off" level.** `water_flow` only accepts 1-3: the water is turned off by removing the mop pad, not over
+  MIoT. Picking a vacuum-only clean mode therefore leaves the water level untouched.
 - Maintenance counters (filter, brush, sieve) are read from the device but not yet exposed as Matter attributes.
 
 ### TODO
 
-- [ ] Segment cleaning (needs the vendor payload for `start_clean` with segment arguments)
-- [ ] Automatic room discovery (requires decoding the `map_view` blob)
+- [ ] Segment cleaning, and the service areas that go with it (needs the vendor payload for `start_clean` with segment
+      arguments, plus decoding the `map_view` blob to discover the segments)
 - [ ] Expose maintenance counters
-- [ ] Surface device faults as Matter `OperationalError` events
+- [ ] Map the vendor fault codes onto the specific Matter error states (dust bin full, stuck, water tank empty, …)
 
 ---
 
@@ -98,16 +82,14 @@ To find the segment IDs, either check the Xiaomi Home app or use
 The MIoT property/action map is shared across the F9 family, so these models are all expected to work. Only the F9 has
 been verified.
 
-| Model                | Code name              | Basic info (battery, serial, firmware) | Full cleaning | Room cleaning |  Tested by  |
-| -------------------- | ---------------------- | :------------------------------------: | :-----------: | :-----------: | :---------: |
-| Dreame F9            | `dreame.vacuum.p2008`  |                   ✅                   |      ✅       |   ⚠️ shown    |  @lirik44   |
-| Dreame D9            | `dreame.vacuum.p2009`  |                   ❔                   |      ❔       |   ⚠️ shown    |             |
-| Dreame Z10 Pro       | `dreame.vacuum.p2028`  |                   ❔                   |      ❔       |   ⚠️ shown    |             |
-| Dreame Mop 2 Pro+    | `dreame.vacuum.p2041o` |                   ❔                   |      ❔       |   ⚠️ shown    |             |
-| Dreame Mop 2 Ultra   | `dreame.vacuum.p2150a` |                   ❔                   |      ❔       |   ⚠️ shown    |             |
-| Dreame Mop 2         | `dreame.vacuum.p2150o` |                   ❔                   |      ❔       |   ⚠️ shown    |             |
-
-⚠️ *shown* = rooms appear as service areas, but selecting one triggers a full clean (see [Limitations](#limitations)).
+| Model              | Code name              | Basic info (battery, serial, firmware) | Full cleaning | Tested by |
+| ------------------ | ---------------------- | :------------------------------------: | :-----------: | :-------: |
+| Dreame F9          | `dreame.vacuum.p2008`  |                   ✅                   |      ✅       | @lirik44  |
+| Dreame D9          | `dreame.vacuum.p2009`  |                   ❔                   |      ❔       |           |
+| Dreame Z10 Pro     | `dreame.vacuum.p2028`  |                   ❔                   |      ❔       |           |
+| Dreame Mop 2 Pro+  | `dreame.vacuum.p2041o` |                   ❔                   |      ❔       |           |
+| Dreame Mop 2 Ultra | `dreame.vacuum.p2150a` |                   ❔                   |      ❔       |           |
+| Dreame Mop 2       | `dreame.vacuum.p2150o` |                   ❔                   |      ❔       |           |
 
 Tested with firmware `4.1.8_1107` on Matterbridge 3.10.5 (Node 22, Raspberry Pi OS).
 
@@ -117,11 +99,11 @@ If you get another model working, please open an issue or a PR to add it to this
 
 ## Known issues
 
-| Issue                                                              | Comment                                                                                                | Workaround                                                                                              |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
-| The device name is not carried over to Apple Home.                 | This affects all Matterbridge devices.                                                                 | Rename the device in the Home app.                                                                      |
-| Apple Home misbehaves when an RVC shares a bridge with other devices. | A known Apple limitation — the whole bridge can become unstable.                                        | This plugin already exposes the vacuum as its own Matter node (`server` mode) with a separate QR code.   |
-| The vacuum shows without controls on macOS.                        | The Home app on macOS occasionally fails to render the RVC tile.                                        | Restart the Home app or the Mac; controls also always work from iPhone and Siri.                        |
+| Issue                                                                 | Comment                                                          | Workaround                                                                                             |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| The device name is not carried over to Apple Home.                    | This affects all Matterbridge devices.                           | Rename the device in the Home app.                                                                     |
+| Apple Home misbehaves when an RVC shares a bridge with other devices. | A known Apple limitation — the whole bridge can become unstable. | This plugin already exposes the vacuum as its own Matter node (`server` mode) with a separate QR code. |
+| The vacuum shows without controls on macOS.                           | The Home app on macOS occasionally fails to render the RVC tile. | Restart the Home app or the Mac; controls also always work from iPhone and Siri.                       |
 
 ## Installation
 
@@ -167,9 +149,7 @@ Add your vacuum to the `devices` array, either through the Matterbridge UI or di
     {
       "name": "Vacuum",
       "ip": "192.168.1.50",
-      "token": "0123456789abcdef0123456789abcdef",
-      "roomIds": [1, 2, 3, 4, 5, 6],
-      "roomNames": ["Laundry", "Bathroom", "Study", "Living Room", "Master Bedroom", "Corridor"]
+      "token": "0123456789abcdef0123456789abcdef"
     }
   ],
   "debug": false,
@@ -177,7 +157,7 @@ Add your vacuum to the `devices` array, either through the Matterbridge UI or di
 }
 ```
 
-`roomIds` and `roomNames` are optional — omit both and the vacuum is exposed without service areas.
+The IP and the token are all the plugin needs; `name` is what the vacuum is called in your controller.
 
 ### Pair with Apple Home
 

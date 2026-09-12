@@ -10,14 +10,6 @@ export interface Config extends PlatformConfig, DeviceManagerConfig, CustomLogge
    * The name of the main service as it will show up in the Home App.
    */
   name: string;
-  /**
-   * The room names in case the alternative timer approach is used to identify the rooms.
-   */
-  roomNames?: string[];
-  /**
-   * The segment IDs, for models that cannot report their rooms (currently Dreame).
-   */
-  roomIds?: number[];
 }
 
 /**
@@ -30,7 +22,7 @@ export interface Config extends PlatformConfig, DeviceManagerConfig, CustomLogge
  */
 export function applyConfigDefaults(config: Partial<Config>): Config {
   return {
-    name: 'Roborock vacuum cleaner',
+    name: 'Dreame vacuum cleaner',
     type: 'DynamicPlatform',
     version: pkg.version,
     unregisterOnShutdown: false,
@@ -45,7 +37,6 @@ export function applyConfigDefaults(config: Partial<Config>): Config {
     goToWord: 'go to coordinates',
     goToX: 25500,
     goToY: 25500,
-    roomTimeout: 0,
     waterBox: false,
     dustBin: false,
     dustCollection: false,

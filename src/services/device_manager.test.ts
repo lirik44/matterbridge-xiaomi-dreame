@@ -1,10 +1,11 @@
-import './device_manager.test.mock.js';
 import { jest } from '@jest/globals';
 import { firstValueFrom } from 'rxjs';
 
 import { getLoggerMock } from '../utils/logger.mock.js';
 import { miio } from '../test.mocks.js';
 
+// Registers the `node-miio` mock, so it must be imported before `./device_manager.js` is.
+import { miioMock } from './device_manager.test.mock.js';
 import type { DeviceManager as IDeviceManager } from './device_manager.js';
 
 describe('DeviceManager', () => {
@@ -88,6 +89,42 @@ describe('DeviceManager', () => {
           "value": "cleaning",
         }
       `);
+    });
+  });
+
+  describe('reconnection', () => {
+    let deviceManager: IDeviceManager;
+
+    afterEach(() => {
+      deviceManager.stop();
+    });
+
+    test('releases the previous device and keeps a single polling loop', async () => {
+      miio.device.matches.mockReturnValue(true);
+      miio.device.property.mockReturnValue('cleaning');
+      miio.device.state.mockResolvedValue({ state: 'cleaning' });
+
+      deviceManager = new DeviceManager(log, {
+        ip: '192.168.0.1',
+        token: 'token',
+      });
+      await new Promise((resolve) => process.nextTick(resolve));
+      expect(deviceManager.device).toBe(miio.device);
+
+      const getStateSpy = jest.spyOn(deviceManager, 'getState');
+      const reconnectedDevice = { ...miio.device, destroy: jest.fn() };
+      miioMock.device.mockImplementationOnce(() => reconnectedDevice);
+
+      // @ts-expect-error `connect` is a private method
+      await deviceManager.connect();
+
+      expect(deviceManager.device).toBe(reconnectedDevice);
+      // The device the manager replaced is released instead of being left with its socket open.
+      expect(miio.device.destroy).toHaveBeenCalled();
+
+      // A second polling loop would poll the robot immediately upon subscribing.
+      await new Promise((resolve) => process.nextTick(resolve));
+      expect(getStateSpy).not.toHaveBeenCalled();
     });
   });
 

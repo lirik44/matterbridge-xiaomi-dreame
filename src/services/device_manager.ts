@@ -1,19 +1,14 @@
-import { BehaviorSubject, distinct, exhaustMap, filter, Subject, takeUntil, timer } from 'rxjs';
+import { BehaviorSubject, distinctUntilChanged, exhaustMap, filter, Subject, takeUntil, timer } from 'rxjs';
 import * as miio from 'node-miio';
 import type { MiioDevice, MiioErrorChangedEvent } from 'node-miio';
 
 import { isDreame, wrapDreame } from '../devices/dreame_device.js';
-import type { DreameRoomsConfig } from '../devices/dreame_device.ts';
 import { cleaningStatuses } from '../utils/constants.js';
 import type { ModelLogger } from '../utils/logger.ts';
 
 export interface DeviceManagerConfig {
   ip?: string;
   token?: string;
-  /** Segment IDs for Dreame models, which cannot discover their rooms over MIoT. */
-  roomIds?: number[];
-  /** Room names, applied in the same order as `roomIds`. */
-  roomNames?: string[];
 }
 
 export interface StateChangedEvent {
@@ -21,19 +16,23 @@ export interface StateChangedEvent {
   value: unknown;
 }
 
-const GET_STATE_INTERVAL_MS = 10000; // 30s
+const GET_STATE_INTERVAL_MS = 10000; // 10s
 
 export class DeviceManager {
   private readonly internalDevice$ = new BehaviorSubject<MiioDevice | undefined>(undefined);
 
   private readonly ip: string;
   private readonly token: string;
-  private readonly rooms: DreameRoomsConfig;
+  /** The polling loop is started on the first connection and kept across reconnections. */
+  private pollingStarted = false;
 
   private readonly internalErrorChanged$ = new Subject<MiioErrorChangedEvent | null>();
   private readonly internalStateChanged$ = new Subject<StateChangedEvent>();
   private readonly stop$ = new Subject<void>();
-  public readonly errorChanged$ = this.internalErrorChanged$.pipe(distinct());
+  // `distinctUntilChanged` (and not `distinct`) so that an error showing up again after being
+  // cleared is reported again. The values are compared by content because the devices reporting
+  // an object build a new one on every poll.
+  public readonly errorChanged$ = this.internalErrorChanged$.pipe(distinctUntilChanged((previous, current) => JSON.stringify(previous) === JSON.stringify(current)));
   public readonly stateChanged$ = this.internalStateChanged$.asObservable();
   public readonly deviceConnected$ = this.internalDevice$.pipe(filter(Boolean));
 
@@ -52,7 +51,6 @@ export class DeviceManager {
       throw new Error('You must provide a token of the vacuum cleaner.');
     }
     this.token = config.token;
-    this.rooms = { roomIds: config.roomIds, roomNames: config.roomNames };
 
     this.connect().catch(() => {
       // Do nothing in the catch because this function already logs the error internally and retries after 2 minutes.
@@ -147,11 +145,22 @@ export class DeviceManager {
 
     if (isDreame(device.miioModel)) {
       this.log.info(`STA getDevice | Dreame detected (${device.miioModel}), using MIoT adapter`);
-      device = wrapDreame(device, this.log, this.rooms);
+      device = wrapDreame(device, this.log);
     }
 
     if (device.matches('type:vaccuum')) {
+      const previousDevice = this.internalDevice$.value;
       this.internalDevice$.next(device);
+
+      // Reconnections create a brand new device: release the previous one, or its socket and
+      // its internal timers are kept alive for as long as the plugin runs.
+      if (previousDevice && previousDevice !== device) {
+        try {
+          previousDevice.destroy();
+        } catch (error) {
+          this.log.debug(`DEB getDevice | Failed to destroy the previous device: ${error}`);
+        }
+      }
 
       this.log.setModel(this.model);
 
@@ -164,17 +173,21 @@ export class DeviceManager {
       this.device.on<MiioErrorChangedEvent>('errorChanged', (error) => this.internalErrorChanged$.next(error));
       this.device.on<StateChangedEvent>('stateChanged', (state) => this.internalStateChanged$.next(state));
 
-      // Refresh the state every 10s so miio maintains a fresh connection (or recovers connection if lost)
-      timer(0, GET_STATE_INTERVAL_MS)
-        .pipe(
-          takeUntil(this.stop$),
-          exhaustMap(() => this.getState()),
-        )
-        .subscribe();
+      // Refresh the state every 10s so miio maintains a fresh connection (or recovers connection if lost).
+      // It always polls `this.device`, so it must only be subscribed once: reconnections reuse it.
+      if (!this.pollingStarted) {
+        this.pollingStarted = true;
+        timer(0, GET_STATE_INTERVAL_MS)
+          .pipe(
+            takeUntil(this.stop$),
+            exhaustMap(() => this.getState()),
+          )
+          .subscribe();
+      }
     } else {
       const model = (device || {}).miioModel;
       this.log.error(
-        `Device "${model}" is not registered as a vacuum cleaner! If you think it should be, please open an issue at https://github.com/afharo/matterbridge-xiaomi-roborock/issues/new and provide this line.`,
+        `Device "${model}" is not registered as a vacuum cleaner! If you think it should be, please open an issue at https://github.com/lirik44/matterbridge-xiaomi-dreame/issues/new and provide this line.`,
       );
       this.log.debug(device);
       device.destroy();

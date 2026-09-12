@@ -2,7 +2,7 @@ import { MatterbridgeEndpoint } from 'matterbridge';
 import { RoboticVacuumCleaner } from 'matterbridge/devices';
 import type { Logger } from 'matterbridge/logger';
 import { firstValueFrom, mergeMap, Subject, takeUntil } from 'rxjs';
-import { PowerSource, RvcRunMode, RvcCleanMode, RvcOperationalState, ServiceArea } from 'matterbridge/matter/clusters';
+import { PowerSource, RvcRunMode, RvcCleanMode, RvcOperationalState } from 'matterbridge/matter/clusters';
 
 import { applyConfigDefaults, type Config } from './services/config_service.js';
 import { DeviceManager } from './services/device_manager.js';
@@ -23,6 +23,9 @@ const SUPPORTED_MODES: RvcRunMode.ModeOption[] = [
   { label: 'Deprecated Idle', mode: 0, modeTags: [{ value: RvcRunMode.ModeTag.Idle }] },
 ];
 
+/** States in which the water level, and not the suction power, identifies what the robot is doing. */
+const MOPPING_STATES = ['mopping', 'sweeping-and-mopping'];
+
 const SUPPORTED_OPERATIONAL_STATES: RvcOperationalState.OperationalStateStruct[] = [
   { operationalStateId: RvcOperationalState.OperationalState.Docked },
   { operationalStateId: RvcOperationalState.OperationalState.SeekingCharger },
@@ -39,7 +42,6 @@ export class VacuumDeviceAccessory {
   private readonly deviceManager: DeviceManager;
   private readonly stop$ = new Subject<void>();
   private endpoint?: RoboticVacuumCleaner;
-  private serviceAreas: ServiceArea.Area[] = [];
   private modelSpeeds: ModelDefinition = MODELS.default[0];
 
   constructor(config: Partial<Config>, logger: Logger) {
@@ -69,11 +71,6 @@ export class VacuumDeviceAccessory {
     this.modelSpeeds = findSpeedModes(this.deviceManager.model, deviceInfo.fw_ver);
     const supportedCleanModes = this.supportedCleanModes;
 
-    this.serviceAreas = await this.getServiceAreas().catch((error) => {
-      this.log.warn(`Failed to retrieve service areas: ${error}`);
-      return [];
-    });
-
     this.endpoint = new RoboticVacuumCleaner(
       this.config.name,
       serialNumber,
@@ -88,15 +85,17 @@ export class VacuumDeviceAccessory {
       undefined,
       RvcOperationalState.OperationalState.Docked,
       SUPPORTED_OPERATIONAL_STATES,
-      this.serviceAreas.length > 0 ? this.serviceAreas : undefined,
+      // Rooms are not exposed: no model covered by this plugin can be told to clean a single
+      // segment over MIoT, so advertising service areas only produces controls that do not work.
       [],
-      this.serviceAreas[0]?.areaId,
+      [],
+      null,
     );
 
     this.endpoint.vendorName = 'Xiaomi';
     this.endpoint.productName = this.deviceManager.model;
     this.endpoint.softwareVersionString = deviceInfo.fw_ver;
-    this.endpoint.productUrl = 'https://github.com/afharo/matterbridge-xiaomi-roborock';
+    this.endpoint.productUrl = 'https://github.com/lirik44/matterbridge-xiaomi-dreame';
     this.endpoint.hardwareVersionString = this.deviceManager.model;
 
     this.endpoint.lifecycle.destroying.on(() => {
@@ -119,20 +118,11 @@ export class VacuumDeviceAccessory {
           // TODO: Confirm what to do here
           // await this.deviceManager.device.pause();
           break;
-        case 2: {
+        case 2:
           // Cleaning
-          const selectedAreas = this.selectedAreas;
-          if (selectedAreas.length === 0) {
-            this.log.info(`Initiating full cleaning...`);
-            await this.deviceManager.device.activateCleaning();
-          } else {
-            this.log.info(`Initiating room cleaning...`);
-            await this.deviceManager.device.cleanRooms(selectedAreas);
-            // HACK: Assign the first selected area as the current area so that we can control speeds while room cleaning
-            await this.endpoint?.updateAttribute(ServiceArea.Cluster.id, 'currentArea', selectedAreas[0]);
-          }
+          this.log.info(`Initiating full cleaning...`);
+          await this.deviceManager.device.activateCleaning();
           break;
-        }
         default:
           this.log.warn(`Unknown mode ${data.request.newMode}`);
           break;
@@ -146,12 +136,7 @@ export class VacuumDeviceAccessory {
       await this.deviceManager.device.pause();
     });
     this.endpoint.addCommandHandler('resume', async () => {
-      const selectedAreas = this.selectedAreas;
-      if (selectedAreas.length > 0) {
-        await this.deviceManager.device.resumeCleanRooms(selectedAreas);
-      } else {
-        await this.deviceManager.device.activateCleaning();
-      }
+      await this.deviceManager.device.activateCleaning();
     });
     this.endpoint.addCommandHandler('goHome', async () => {
       await this.endpoint?.updateAttribute(RvcOperationalState.Cluster.id, 'operationalState', RvcOperationalState.OperationalState.SeekingCharger);
@@ -160,15 +145,6 @@ export class VacuumDeviceAccessory {
     this.endpoint.addCommandHandler('identify', async () => {
       await this.deviceManager.device.find();
     });
-    this.endpoint.addCommandHandler('selectAreas', async (data) => {
-      this.log.debug(`Select areas command received: ${data.request.newAreas}`);
-      let selectedAreas = data.request.newAreas;
-      if ((data.attributes.supportedAreas as ServiceArea.Area[])?.length === selectedAreas.length) {
-        selectedAreas = []; // Force empty if all areas are selected
-      }
-      await this.endpoint?.updateAttribute(ServiceArea.Cluster.id, 'selectedAreas', selectedAreas);
-    });
-
     return this.endpoint;
   }
 
@@ -187,15 +163,18 @@ export class VacuumDeviceAccessory {
       )
       .subscribe();
 
-    // Force-set the currentArea attribute to null, as we're not able to retrieve the current area at the moment.
-    await this.endpoint?.updateAttribute(ServiceArea.Cluster.id, 'currentArea', null);
-
-    // If no areas are found, we need to clear the serviceAreas and the currentArea attributes
-    // (the constructor doesn't allow setting them to null as it fallbacks to defaults).
-    if (this.serviceAreas.length === 0) {
-      await this.endpoint?.updateAttribute(ServiceArea.Cluster.id, 'currentArea', null);
-      await this.endpoint?.updateAttribute(ServiceArea.Cluster.id, 'supportedAreas', []);
-    }
+    this.deviceManager.errorChanged$
+      .pipe(
+        mergeMap(async (error) => {
+          const operationalError = toOperationalError(error);
+          this.log.debug(`Device error changed: ${JSON.stringify(error)}`);
+          // Only the error details are reported here: the operational state itself is driven by
+          // the `state` handler below, which knows whether the robot stopped because of the fault.
+          await this.endpoint?.updateAttribute(RvcOperationalState.Cluster.id, 'operationalError', operationalError);
+        }),
+        takeUntil(this.stop$),
+      )
+      .subscribe();
   }
 
   public stop() {
@@ -247,18 +226,10 @@ export class VacuumDeviceAccessory {
       }
     },
     fanSpeed: async (miLevel: number) => {
-      const currentMopLevel = this.deviceManager.property<number>('water_box_mode');
-      const cleanMode = this.supportedCleanModes.find(({ miLevels }) => miLevels.vacuum === miLevel && miLevels.mop === currentMopLevel);
-      if (cleanMode) {
-        await this.endpoint?.updateAttribute(RvcCleanMode.Cluster.id, 'currentMode', cleanMode.mode);
-      }
+      await this.updateCleanMode(miLevel, this.deviceManager.property<number>('water_box_mode'));
     },
     water_box_mode: async (miLevel: number) => {
-      const currentVacuumLevel = this.deviceManager.property<number>('fanSpeed');
-      const cleanMode = this.supportedCleanModes.find(({ miLevels }) => miLevels.mop === miLevel && miLevels.vacuum === currentVacuumLevel);
-      if (cleanMode) {
-        await this.endpoint?.updateAttribute(RvcCleanMode.Cluster.id, 'currentMode', cleanMode.mode);
-      }
+      await this.updateCleanMode(this.deviceManager.property<number>('fanSpeed'), miLevel);
     },
     state: async (state: string) => {
       await this.stateChangedHandlers.charging(state === 'charging');
@@ -280,12 +251,14 @@ export class VacuumDeviceAccessory {
         case 'sweeping':
         case 'mopping':
         case 'sweeping-and-mopping':
+        case 'building': // Mapping run
           await this.endpoint?.updateAttribute(RvcRunMode.Cluster.id, 'currentMode', SUPPORTED_MODES[1].mode);
           await this.endpoint?.updateAttribute(RvcOperationalState.Cluster.id, 'operationalState', RvcOperationalState.OperationalState.Running);
           break;
 
         case 'returning': // We might want to emit the optional RvcOperationalState.Cluster.events.operationCompletion when completed cleaning (or when errors occur)
         case 'docking':
+        case 'returning-washing':
           await this.endpoint?.updateAttribute(RvcOperationalState.Cluster.id, 'operationalState', RvcOperationalState.OperationalState.SeekingCharger);
           break;
 
@@ -295,18 +268,22 @@ export class VacuumDeviceAccessory {
           // We might want to emit the optional RvcOperationalState.Cluster.events.operationCompletion when completed cleaning (or when errors occur)
           break;
 
+        // Drying and washing both happen at the dock, with the robot unavailable until they finish.
         case 'fully-charged':
+        case 'drying':
+        case 'washing':
           await this.endpoint?.updateAttribute(RvcOperationalState.Cluster.id, 'operationalState', RvcOperationalState.OperationalState.Docked);
           break;
 
         case 'charging-error':
           await this.endpoint?.updateAttribute(RvcOperationalState.Cluster.id, 'operationalState', RvcOperationalState.OperationalState.Error);
-          await this.endpoint?.updateAttribute(RvcOperationalState.Cluster.id, 'operationalError', RvcOperationalState.ErrorState.FailedToFindChargingDock);
+          await this.endpoint?.updateAttribute(RvcOperationalState.Cluster.id, 'operationalError', { errorStateId: RvcOperationalState.ErrorState.FailedToFindChargingDock });
           break;
 
         case 'initializing':
         case 'idle':
         case 'sleeping':
+        case 'updating':
           await this.endpoint?.updateAttribute(RvcRunMode.Cluster.id, 'currentMode', SUPPORTED_MODES[0].mode);
           await this.endpoint?.updateAttribute(RvcOperationalState.Cluster.id, 'operationalState', RvcOperationalState.OperationalState.Stopped);
           break;
@@ -318,73 +295,47 @@ export class VacuumDeviceAccessory {
     },
   };
 
-  private async getServiceAreas(): Promise<ServiceArea.Area[]> {
-    // It should try to retrieve the map from the device.
-    // If empty, try the timer workaround.
-    // Else, return an empty array.
-
-    const roomMapping = await this.deviceManager.device.getRoomMap();
-    if (roomMapping.length > 0) {
-      this.log.info(`Room mapping found: ${JSON.stringify(roomMapping)}`);
-      this.log.info(`Creating service areas from room mapping...`);
-      return roomMapping.map(([roomId, roomName], index): ServiceArea.Area => ({
-        areaId: parseInt(roomId),
-        mapId: null,
-        areaInfo: {
-          locationInfo: {
-            locationName: this.config.roomNames?.[index] || `${roomName}`,
-            floorNumber: null,
-            areaType: null,
-          },
-          landmarkInfo: null,
-        },
-      }));
+  /**
+   * Reports the clean mode matching the levels the robot is currently running with.
+   *
+   * @param {number?} vacuumLevel The suction power reported by the robot.
+   * @param {number?} mopLevel The water level reported by the robot.
+   */
+  private async updateCleanMode(vacuumLevel?: number, mopLevel?: number) {
+    const cleanMode = this.findCleanMode(vacuumLevel, mopLevel);
+    if (cleanMode) {
+      await this.endpoint?.updateAttribute(RvcCleanMode.Cluster.id, 'currentMode', cleanMode.mode);
     }
-
-    const timers = await this.deviceManager.device.getTimer();
-    if (timers.length > 0) {
-      const timer = timers.find(([id, status, definition]) => {
-        if (['off', 'disabled'].includes(status)) {
-          const [cronExpression, action] = definition;
-          // Who sets up a timer that runs at midnight for a Vacuum Cleaner? This should be it.
-          if (cronExpression.startsWith('0 0 * *')) {
-            const [, params] = action;
-            if (params.segments) {
-              this.log.debug(`Potential timer found with ID ${id}: ${JSON.stringify(action)}}`);
-              return true;
-            }
-          }
-        }
-        return false;
-      });
-      if (timer) {
-        const segments = timer[2][1][1].segments.split(',');
-        return segments.map((roomId, index): ServiceArea.Area => ({
-          areaId: parseInt(roomId),
-          mapId: null,
-          areaInfo: {
-            locationInfo: {
-              // Can't know the name in these models. Users will need to rename it in their apps.
-              locationName: this.config.roomNames?.[index] || `Room ${roomId}`,
-              floorNumber: null,
-              areaType: null,
-            },
-            landmarkInfo: null,
-          },
-        }));
-      }
-    }
-
-    return [];
   }
 
-  private get selectedAreas(): number[] {
-    const selectedAreas = (this.endpoint?.getAttribute(ServiceArea.Cluster.id, 'selectedAreas') as number[] | undefined) ?? [];
-    if (selectedAreas.length === this.serviceAreas.length) {
-      // If all selected, return empty array to trigger full cleaning
-      return [];
+  /**
+   * Finds the clean mode matching the levels reported by the robot.
+   *
+   * Each mode flattens a (suction, water) pair, so the exact pair is looked up first. Some models
+   * (Dreame) always report a water level because theirs has no "off" value: the pair then never
+   * matches, and the level that identifies what the robot is doing wins instead — the water level
+   * while it mops, the suction power otherwise.
+   *
+   * @param {number?} vacuumLevel The suction power reported by the robot.
+   * @param {number?} mopLevel The water level reported by the robot.
+   * @returns {SupportedCleanMode?} The matching clean mode, if any.
+   */
+  private findCleanMode(vacuumLevel?: number, mopLevel?: number): SupportedCleanMode | undefined {
+    const cleanModes = this.supportedCleanModes;
+
+    const exactMatch = cleanModes.find(({ miLevels }) => miLevels.vacuum === vacuumLevel && miLevels.mop === mopLevel);
+    if (exactMatch) {
+      return exactMatch;
     }
-    return selectedAreas;
+
+    const byMopLevel = cleanModes.find(({ miLevels }) => miLevels.mop === mopLevel);
+    const byVacuumLevel = cleanModes.find(({ miLevels }) => miLevels.vacuum === vacuumLevel);
+
+    return this.isMopping ? (byMopLevel ?? byVacuumLevel) : (byVacuumLevel ?? byMopLevel);
+  }
+
+  private get isMopping(): boolean {
+    return MOPPING_STATES.includes(this.deviceManager.property<string>('state') as string);
   }
 
   private get supportedCleanModes(): Array<SupportedCleanMode> {
@@ -421,6 +372,31 @@ export class VacuumDeviceAccessory {
 
     return supportedCleanModes;
   }
+}
+
+/** Matter caps `ErrorStateDetails` at 64 characters. */
+const MAX_ERROR_DETAILS_LENGTH = 64;
+
+/**
+ * Translates the error reported by the robot into the Matter operational error.
+ *
+ * The fault codes are vendor-specific (a number on Dreame, an `{ id, description }` pair on
+ * Roborock), so anything unknown is reported as a generic failure carrying the original code.
+ *
+ * @param {unknown} error The error reported by the device, if any.
+ * @returns {object} The `operationalError` attribute value.
+ */
+function toOperationalError(error: unknown): { errorStateId: RvcOperationalState.ErrorState; errorStateDetails?: string } {
+  if (error === null || error === undefined || error === 0 || error === '') {
+    return { errorStateId: RvcOperationalState.ErrorState.NoError };
+  }
+
+  const details = typeof error === 'object' ? Object.values(error).filter(Boolean).join(': ') : String(error);
+
+  return {
+    errorStateId: RvcOperationalState.ErrorState.UnableToCompleteOperation,
+    errorStateDetails: details.slice(0, MAX_ERROR_DETAILS_LENGTH),
+  };
 }
 
 /**
