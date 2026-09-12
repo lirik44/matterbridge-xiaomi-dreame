@@ -163,11 +163,47 @@ describe('DreameDevice', () => {
       ['activateCleaning', 'start_clean', { siid: 4, aiid: 1 }],
       ['deactivateCleaning', 'stop_clean', { siid: 4, aiid: 2 }],
       ['pause', 'stop_clean', { siid: 4, aiid: 2 }],
-      ['activateCharging', 'home', { siid: 3, aiid: 1 }],
       ['find', 'locate', { siid: 7, aiid: 1 }],
     ] as const)('%s calls the %s action', async (method, action, spec) => {
       await device[method]();
       expect(raw.call).toHaveBeenCalledWith('action', { did: action, ...spec, in: [] });
+    });
+
+    describe('activateCharging', () => {
+      /**
+       * @returns {string[]} The calls the robot received, in order.
+       */
+      const calledActions = (): string[] => raw.call.mock.calls.map(([, args]) => (args as { did: string }).did);
+
+      beforeEach(() => {
+        jest.useFakeTimers();
+      });
+
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      test('stops the cleaning and waits before sending the robot home', async () => {
+        const charging = device.activateCharging();
+        await jest.advanceTimersByTimeAsync(0);
+        // The robot ignores `home` while it is still cleaning or paused.
+        expect(calledActions()).toStrictEqual(['stop_clean']);
+
+        await jest.advanceTimersByTimeAsync(1000);
+        await charging;
+        expect(calledActions()).toStrictEqual(['stop_clean', 'home']);
+      });
+
+      test('still goes home when the robot refuses to stop', async () => {
+        raw.call.mockRejectedValueOnce(new Error('Could not complete call to device') as never);
+
+        const charging = device.activateCharging();
+        await jest.advanceTimersByTimeAsync(1000);
+        await charging;
+
+        expect(calledActions()).toStrictEqual(['stop_clean', 'home']);
+        expect(log.debug).toHaveBeenCalledWith('dreame | stop_clean before home failed: Error: Could not complete call to device');
+      });
     });
 
     test('changeFanSpeed sets cleaning_mode', async () => {
@@ -189,6 +225,24 @@ describe('DreameDevice', () => {
       await device.setWaterBoxMode(0);
       expect(raw.call).not.toHaveBeenCalled();
       expect(log.debug).toHaveBeenCalledWith('dreame | dreame.vacuum.p2008 has no "water off" level, keeping the current one');
+    });
+  });
+
+  describe('refused calls', () => {
+    // MIoT answers a rejected command with a non-zero code instead of failing the request.
+    test('an action the robot refused is reported as an error', async () => {
+      raw.call.mockResolvedValueOnce({ did: 'start_clean', code: -5 } as never);
+      await expect(device.activateCleaning()).rejects.toThrow('The robot refused "start_clean" (code -5)');
+    });
+
+    test('a property the robot refused is reported as an error', async () => {
+      raw.call.mockResolvedValueOnce([{ did: 'water_flow', code: -4004 }] as never);
+      await expect(device.setWaterBoxMode(3)).rejects.toThrow('The robot refused "water_flow" (code -4004)');
+    });
+
+    test('a successful call is not reported as an error', async () => {
+      raw.call.mockResolvedValueOnce({ did: 'start_clean', code: 0 } as never);
+      await expect(device.activateCleaning()).resolves.toStrictEqual({ did: 'start_clean', code: 0 });
     });
   });
 

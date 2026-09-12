@@ -102,6 +102,36 @@ interface MiotPropertyResult {
   value: unknown;
 }
 
+/** How long the robot needs between being stopped and accepting `home`. */
+const STOP_BEFORE_HOME_DELAY_MS = 1000;
+
+/**
+ * @param {number} ms How long to wait.
+ * @returns {Promise<void>} A promise resolving after `ms`.
+ */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Throws when the robot refused the call.
+ *
+ * MIoT answers a rejected command with a non-zero `code` instead of failing the request, so
+ * without this check a command the robot ignored looks like it succeeded.
+ *
+ * @param {string} name The property or action that was called.
+ * @param {unknown} result The response from the device.
+ */
+function assertMiotOk(name: string, result: unknown): void {
+  const entries = Array.isArray(result) ? result : [result];
+  for (const entry of entries) {
+    const code = (entry as { code?: unknown } | null)?.code;
+    if (typeof code === 'number' && code !== 0) {
+      throw new Error(`The robot refused "${name}" (code ${code})`);
+    }
+  }
+}
+
 class DreameDevice {
   private cache: Record<string, unknown> = {};
 
@@ -175,7 +205,9 @@ class DreameDevice {
     if (!spec) {
       throw new Error(`Unknown Dreame property: ${name}`);
     }
-    return this.rawCall('set_properties', [{ did: name, ...spec, value }]);
+    const result = await this.rawCall('set_properties', [{ did: name, ...spec, value }]);
+    assertMiotOk(name, result);
+    return result;
   }
 
   private async callAction(name: string, params: unknown[] = []): Promise<unknown> {
@@ -183,7 +215,9 @@ class DreameDevice {
     if (!spec) {
       throw new Error(`Unknown Dreame action: ${name}`);
     }
-    return this.rawCall('action', { did: name, ...spec, in: params });
+    const result = await this.rawCall('action', { did: name, ...spec, in: params });
+    assertMiotOk(name, result);
+    return result;
   }
 
   // --- state ----------------------------------------------------------------
@@ -270,6 +304,13 @@ class DreameDevice {
   }
 
   async activateCharging(): Promise<unknown> {
+    // The robot ignores `home` while it is cleaning or paused, and then stops answering
+    // altogether, so the cleaning is stopped first and it is given a moment to settle.
+    // This is what node-miio's own Dreame implementation does.
+    await this.deactivateCleaning().catch((error) => {
+      this.log.debug(`dreame | stop_clean before home failed: ${error}`);
+    });
+    await delay(STOP_BEFORE_HOME_DELAY_MS);
     return this.callAction('home');
   }
 
