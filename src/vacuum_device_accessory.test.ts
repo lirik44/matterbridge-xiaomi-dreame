@@ -169,11 +169,15 @@ describe('VacuumDeviceAccessory', () => {
       });
 
       describe('goHome', () => {
-        test('sends the RVC to the charger', async () => {
-          jest.spyOn(endpoint, 'updateAttribute').mockResolvedValueOnce(true);
+        test('sends the RVC to the charger without writing to the cluster it is called from', async () => {
+          const updateAttributeSpy = jest.spyOn(endpoint, 'updateAttribute').mockResolvedValue(true);
+
           endpoint.commandHandler.executeHandler('goHome', { request: {} } as unknown as CommandHandlerPayload<'goHome'>);
           await Promise.resolve(); // Just waiting for the pending promises to run
+
           expect(deviceManagerMock.device.activateCharging).toHaveBeenCalled();
+          // Writing an attribute of the cluster being commanded deadlocks the command.
+          expect(updateAttributeSpy).not.toHaveBeenCalled();
         });
       });
 

@@ -139,7 +139,11 @@ export class VacuumDeviceAccessory {
       await this.deviceManager.device.activateCleaning();
     });
     this.endpoint.addCommandHandler('goHome', async () => {
-      await this.endpoint?.updateAttribute(RvcOperationalState.Cluster.id, 'operationalState', RvcOperationalState.OperationalState.SeekingCharger);
+      // Never write an attribute of the cluster being commanded from inside its own handler:
+      // matter.js opens a transaction for the write that waits for the lock the command itself
+      // holds, the command never returns and the controller reports the vacuum as unresponsive.
+      // Matterbridge sets the operational state once this resolves, and the next poll reports
+      // what the robot is actually doing.
       await this.deviceManager.device.activateCharging();
     });
     this.endpoint.addCommandHandler('identify', async () => {
