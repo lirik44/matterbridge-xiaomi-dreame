@@ -64,7 +64,7 @@ export default defineConfig([
   {
     name: 'TypeScript Source Files',
     files: ['src/**/*.ts'],
-    ignores: ['src/**/*.test.ts', 'src/**/*.spec.ts'], // Ignore test files
+    ignores: ['src/**/*.test.ts', 'src/**/*.spec.ts', 'src/**/*.mock.ts', 'src/**/*.mocks.ts'], // Ignore test files and the mocks they use
     languageOptions: {
       parser: tseslint.parser,
       parserOptions: {
@@ -91,7 +91,7 @@ export default defineConfig([
   },
   {
     name: 'Jest Test Files',
-    files: ['**/*.spec.ts', '**/*.test.ts', 'test/**/*.ts'],
+    files: ['**/*.spec.ts', '**/*.test.ts', '**/*.mock.ts', '**/*.mocks.ts', 'test/**/*.ts'],
     ignores: [],
     languageOptions: {
       parser: tseslint.parser,
